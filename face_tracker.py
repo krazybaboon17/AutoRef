@@ -2,8 +2,8 @@ import cv2
 from flask import Flask, Response, render_template
 import numpy as np
 
-lowerColor = np.array([5, 150, 150])
-upperColor = np.array([15, 255, 255])
+lowerOrange = np.array([5, 150, 150])
+upperOrange = np.array([15, 255, 255])
 faceCascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 videoCapture = cv2.VideoCapture(1)
 
@@ -25,16 +25,22 @@ def generate_frames():
         
         blurredImg = cv2.GaussianBlur(currentFrame, (11, 11), 0)
         hsvImage = cv2.cvtColor(blurredImg, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsvImage, lowerColor, upperColor)
+        mask = cv2.inRange(hsvImage, lowerOrange, upperOrange)
         mask = cv2.erode(mask, None, iterations=2)
         mask = cv2.dilate(mask, None, iterations=2)
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if contours:                                           
             c = max(contours, key=cv2.contourArea)            
-            x, y, w, h = cv2.boundingRect(c)                  
-            cv2.rectangle(currentFrame, (x, y), (x + w, y + h), (0, 0, 255), 2)  
-            cv2.putText(currentFrame, 'BALL', (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)  
+            if cv2.contourArea(c) > 50:
+                (xCenter, yCenter), radius = cv2.minEnclosingCircle(c)
+                contourArea = cv2.contourArea(c)
+                circleArea = np.pi * (radius ** 2)
+                roundness = contourArea / circleArea if circleArea > 0 else 0
+                if roundness > 0.4:
+                    x, y, w, h = cv2.boundingRect(c)
+                    cv2.rectangle(currentFrame, (x, y), (x + w, y + h), (0, 0, 255), 2)
+                    cv2.putText(currentFrame, 'BALL', (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         success, encoded_image = cv2.imencode(".jpg", currentFrame)
         if not success:
