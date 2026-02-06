@@ -3,41 +3,29 @@ from flask import Flask, Response, render_template
 import numpy as np
 import mediapipe as mp
 
-lowerOrange = np.array([5, 150, 150])
-upperOrange = np.array([15, 255, 255])
-lowerWhite = np.array([0, 0, 200])
-upperWhite = np.array([180, 30, 255])
+
 
 faceCascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+profileCascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
+mpPose = mp.solutions.pose
+pose = mpPose.Pose(model_complexity=0, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+
 videoCapture = cv2.VideoCapture(0)
 
-mpPose = mp.solutions.pose
-pose = mpPose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
-mpDraw = mp.solutions.drawing_utils
+
+
+
 
 app = Flask(__name__)
-scaleFactor = 0.5
+scaleFactor = 0.2
 
-def detect_ball(frame, lowerColor, upperColor, colorBgr=(0,0,255), label='BALL'):
-    blurredFrame = cv2.GaussianBlur(frame, (11,11),0)
-    hsvFrame = cv2.cvtColor(blurredFrame, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsvFrame, lowerColor, upperColor)
-    mask = cv2.erode(mask, None, iterations=2)
-    mask = cv2.dilate(mask, None, iterations=2)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        c = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(c) > 50:
-            ((xCenter, yCenter), radius) = cv2.minEnclosingCircle(c)
-            contourArea = cv2.contourArea(c)
-            circleArea = np.pi * (radius ** 2)
-            roundness = contourArea / circleArea if circleArea > 0 else 0
-            if roundness > 0.7:
-                x, y, w, h = cv2.boundingRect(c)
-                cv2.rectangle(frame, (x,y), (x+w, y+h), colorBgr, 2)
-                cv2.putText(frame, label, (x,y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, colorBgr, 2)
 
-def generate_frames():
+
+def generateFrames():
+    smoothBox = None
+    smoothFaceBox = None
+    alpha = 0.4
+    faceAlpha = 0.3
     while True:
         isRet, currentFrame = videoCapture.read()
         if not isRet:
@@ -45,36 +33,88 @@ def generate_frames():
 
         resizedFrame = cv2.resize(currentFrame, None, fx=scaleFactor, fy=scaleFactor)
         grayFrame = cv2.cvtColor(resizedFrame, cv2.COLOR_BGR2GRAY)
-        detectedFaces = faceCascade.detectMultiScale(grayFrame, 1.1, 4)
+        sideFaces = list(profileCascade.detectMultiScale(grayFrame, 1.1, 4))
+        for (x, y, w, h) in profileCascade.detectMultiScale(cv2.flip(grayFrame, 1), 1.1, 4):
+            sideFaces.append([grayFrame.shape[1] - x - w, y, w, h])
 
-        for (x, y, width, height) in detectedFaces:
-            x, y, w, h = int(x/scaleFactor), int(y/scaleFactor), int(width/scaleFactor), int(height/scaleFactor)
-            cv2.rectangle(currentFrame, (x, y), (x+w, y+h), (255,0,0), 2)
-            cv2.putText(currentFrame, "FACE", (x,y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,0,0), 2)
+        faceCandidate = None
+        if sideFaces:
+            faceCandidate = sideFaces[0]
+        else:
+            faces = faceCascade.detectMultiScale(grayFrame, 1.1, 4)
+            if len(faces) > 0:
+                faceCandidate = list(faces[0])
 
-        detect_ball(currentFrame, lowerOrange, upperOrange, (0,0,255), 'BALL')
-        detect_ball(currentFrame, lowerWhite, upperWhite, (255,255,255), 'BALL')
+        xf, yf, wf, hf = (None, None, None, None)
+        if faceCandidate is not None:
+            xfc, yfc, wfc, hfc = faceCandidate
+            xfc, yfc, wfc, hfc = int(xfc/scaleFactor), int(yfc/scaleFactor), int(wfc/scaleFactor), int(hfc/scaleFactor)
+            
+            if smoothFaceBox is None:
+                smoothFaceBox = [xfc, yfc, wfc, hfc]
+            else:
+                smoothFaceBox[0] = int(faceAlpha * xfc + (1 - faceAlpha) * smoothFaceBox[0])
+                smoothFaceBox[1] = int(faceAlpha * yfc + (1 - faceAlpha) * smoothFaceBox[1])
+                smoothFaceBox[2] = int(faceAlpha * wfc + (1 - faceAlpha) * smoothFaceBox[2])
+                smoothFaceBox[3] = int(faceAlpha * hfc + (1 - faceAlpha) * smoothFaceBox[3])
+            
+            xf, yf, wf, hf = smoothFaceBox
+        else:
+            smoothFaceBox = None
 
+        
         rgbFrame = cv2.cvtColor(currentFrame, cv2.COLOR_BGR2RGB)
         results = pose.process(rgbFrame)
+
         if results.pose_landmarks:
-            mpDraw.draw_landmarks(currentFrame, results.pose_landmarks, mpPose.POSE_CONNECTIONS)
+            h, w, _ = currentFrame.shape
+            xMin, yMin = w, h
+            xMax, yMax = 0, 0
+            for lm in results.pose_landmarks.landmark:
+                cx, cy = int(lm.x * w), int(lm.y * h)
+                xMin, yMin = min(xMin, cx), min(yMin, cy)
+                xMax, yMax = max(xMax, cx), max(yMax, cy)
+            
+            
+            xMin, yMin = max(0, xMin - 20), max(0, yMin - 20)
+            xMax, yMax = min(w, xMax + 20), min(h, yMax + 20)
+            
+            
+            if yf is not None:
+                yMin = min(yMin, yf)
+
+            if smoothBox is None:
+                smoothBox = [xMin, yMin, xMax, yMax]
+            else:
+                smoothBox[0] = int(alpha * xMin + (1 - alpha) * smoothBox[0])
+                smoothBox[1] = int(alpha * yMin + (1 - alpha) * smoothBox[1])
+                smoothBox[2] = int(alpha * xMax + (1 - alpha) * smoothBox[2])
+                smoothBox[3] = int(alpha * yMax + (1 - alpha) * smoothBox[3]) 
+            
+            xb, yb, xe, ye = smoothBox
+            cv2.rectangle(currentFrame, (xb, yb), (xe, ye), (0, 255, 0), 2)
+            cv2.putText(currentFrame, "BODY", (xb, yb-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+
+        
+        if xf is not None:
+            cv2.rectangle(currentFrame, (xf, yf), (xf+wf, yf+hf), (255, 0, 0), 2)
+            cv2.putText(currentFrame, "FACE", (xf, yf-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
+
+
+
 
         success, encodedFrame = cv2.imencode(".jpg", currentFrame)
         if not success:
             continue
-        frameBytes = encodedFrame.tobytes()
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frameBytes + b'\r\n')
+        yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + encodedFrame.tobytes() + b'\r\n')
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
 @app.route('/video_feed')
-def video_feed():
-    return Response(generate_frames(),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
+def videoFeed():
+    return Response(generateFrames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5001)
