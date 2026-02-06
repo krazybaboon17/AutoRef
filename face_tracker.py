@@ -59,7 +59,7 @@ class BallTracker:
                 self.state, self.trackCount, self.ballPos = "SEARCH", 0, None
                 return None
         
-        # Returning full data for the dual visual style
+        
         return {"pos": self.ballPos, "radius": self.ballRadius, "state": self.state}
 
 faceCascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
