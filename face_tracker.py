@@ -68,7 +68,7 @@ mpPose = mp.solutions.pose
 pose = mpPose.Pose(model_complexity=0, min_detection_confidence=0.5, min_tracking_confidence=0.5)
 videoCapture = cv2.VideoCapture(0)
 app = Flask(__name__)
-scaleFactor = 0.4
+scaleFactor = 0.1
 
 def generateFrames():
     tracker = BallTracker()
