@@ -1,12 +1,16 @@
 import cv2
-from flask import Flask, Response, render_template
 import numpy as np
-import mediapipe as mp
+from ultralytics import YOLO
+import json
+from flask import Flask, Response, render_template, request, jsonify
+
+table_points = []
 
 class BallTracker:
     def __init__(self):
-        self.lowerOrange = np.array([5, 150, 100])
-        self.upperOrange = np.array([15, 255, 255])
+        self.lowerOrange = np.array([5, 120, 100])
+        self.upperOrange = np.array([25, 255, 255])
+        
         self.backSub = cv2.createBackgroundSubtractorMOG2(history=100, varThreshold=50, detectShadows=False)
         
         self.kf = cv2.KalmanFilter(4, 2)
@@ -58,76 +62,66 @@ class BallTracker:
             if self.lostCount > 10:
                 self.state, self.trackCount, self.ballPos = "SEARCH", 0, None
                 return None
-        
-        
+                
         return {"pos": self.ballPos, "radius": self.ballRadius, "state": self.state}
 
-faceCascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-profileCascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
-mpPose = mp.solutions.pose
-pose = mpPose.Pose(model_complexity=0, min_detection_confidence=0.5, min_tracking_confidence=0.5)
 videoCapture = cv2.VideoCapture(0)
 app = Flask(__name__)
-scaleFactor = 0.1
+yolo_model = YOLO('yolov8n.pt') 
 
 def generateFrames():
     tracker = BallTracker()
-    smoothBox, smoothFaceBox = None, None
-    alpha, faceAlpha = 0.4, 0.3
     
     while True:
         isRet, currentFrame = videoCapture.read()
         if not isRet: continue
         
-        resizedFrame = cv2.resize(currentFrame, None, fx=scaleFactor, fy=scaleFactor)
-        grayFrame = cv2.cvtColor(resizedFrame, cv2.COLOR_BGR2GRAY)
-        sideFaces = list(profileCascade.detectMultiScale(grayFrame, 1.1, 4))
-        for (x, y, w, h) in profileCascade.detectMultiScale(cv2.flip(grayFrame, 1), 1.1, 4):
-            sideFaces.append([grayFrame.shape[1] - x - w, y, w, h])
-
-        faceCandidate = sideFaces[0] if sideFaces else None
-        if faceCandidate is None:
-            faces = faceCascade.detectMultiScale(grayFrame, 1.1, 4)
-            if len(faces) > 0: faceCandidate = list(faces[0])
-
-        xf, yf, wf, hf = None, None, None, None
-        if faceCandidate is not None:
-            xfc, yfc, wfc, hfc = [int(v/scaleFactor) for v in faceCandidate]
-            if smoothFaceBox is None: smoothFaceBox = [xfc, yfc, wfc, hfc]
-            else:
-                for i in range(4): smoothFaceBox[i] = int(faceAlpha * [xfc, yfc, wfc, hfc][i] + (1 - faceAlpha) * smoothFaceBox[i])
-            xf, yf, wf, hf = smoothFaceBox
-        else: smoothFaceBox = None
-
-        rgbFrame = cv2.cvtColor(currentFrame, cv2.COLOR_BGR2RGB)
-        results = pose.process(rgbFrame)
-        if results.pose_landmarks:
-            h, w, _ = currentFrame.shape
-            xCoords = [int(lm.x * w) for lm in results.pose_landmarks.landmark]
-            yCoords = [int(lm.y * h) for lm in results.pose_landmarks.landmark]
-            xMin, yMin, xMax, yMax = max(0, min(xCoords)-20), max(0, min(yCoords)-20), min(w, max(xCoords)+20), min(h, max(yCoords)+20)
-            if yf is not None: yMin = min(yMin, yf)
-            if smoothBox is None: smoothBox = [xMin, yMin, xMax, yMax]
-            else:
-                vals = [xMin, yMin, xMax, yMax]
-                for i in range(4): smoothBox[i] = int(alpha * vals[i] + (1 - alpha) * smoothBox[i])
-            cv2.rectangle(currentFrame, (smoothBox[0], smoothBox[1]), (smoothBox[2], smoothBox[3]), (0, 255, 0), 2)
-            cv2.putText(currentFrame, "BODY", (smoothBox[0], smoothBox[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-
-        if xf is not None:
-            cv2.rectangle(currentFrame, (xf, yf), (xf+wf, yf+hf), (255, 0, 0), 2)
-            cv2.putText(currentFrame, "FACE", (xf, yf-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
+        results = yolo_model.predict(currentFrame, classes=[32], conf=0.25, verbose=False)
+        yolo_ball = None
+        for r in results:
+            for box in r.boxes:
+                b = box.xyxy[0].cpu().numpy()
+                yolo_ball = {"pos": (int((b[0]+b[2])/2), int((b[1]+b[3])/2)), "radius": int((b[2]-b[0])/2)}
+                break 
 
         ballData = tracker.detectBall(currentFrame)
+        
         if ballData:
             bp, br, bs = ballData["pos"], ballData["radius"], ballData["state"]
             cv2.circle(currentFrame, bp, br + 5, (0, 165, 255), 2)
-            cv2.putText(currentFrame, "BALL", (bp[0] + 10, bp[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+            cv2.putText(currentFrame, "PINGPONG", (bp[0] + 10, bp[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
             
             if bs == "TRACKING":
                 rx1, ry1 = max(0, bp[0] - tracker.roiSize), max(0, bp[1] - tracker.roiSize)
                 rx2, ry2 = min(currentFrame.shape[1], bp[0] + tracker.roiSize), min(currentFrame.shape[0], bp[1] + tracker.roiSize)
                 cv2.rectangle(currentFrame, (rx1, ry1), (rx2, ry2), (255, 255, 0), 1)
+
+        if yolo_ball:
+            yp, yr = yolo_ball["pos"], yolo_ball["radius"]
+            cv2.circle(currentFrame, yp, yr + 8, (255, 255, 0), 3)
+            cv2.putText(currentFrame, "YOLO BALL", (yp[0] + 10, yp[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+
+        main_ball_pos = yolo_ball["pos"] if yolo_ball else (ballData["pos"] if ballData else None)
+        
+        if len(table_points) == 4:
+            pts = np.array(table_points, np.int32).reshape((-1, 1, 2))
+            cv2.polylines(currentFrame, [pts], True, (0, 255, 255), 2)
+        
+            min_x = min(p[0] for p in table_points)
+            max_x = max(p[0] for p in table_points)
+            min_y = min(p[1] for p in table_points)
+            max_y = max(p[1] for p in table_points)
+            cv2.rectangle(currentFrame, (min_x, min_y), (max_x, max_y), (0, 255, 0), 1, cv2.LINE_AA)
+            cv2.putText(currentFrame, "TABLE RANGE", (min_x, min_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+            if main_ball_pos:
+                bx = main_ball_pos[0]
+                if bx < min_x or bx > max_x:
+                    overlay = currentFrame.copy()
+                    cv2.rectangle(overlay, (0, 0), (currentFrame.shape[1], currentFrame.shape[0]), (0, 0, 255), -1)
+                    cv2.addWeighted(overlay, 0.3, currentFrame, 0.7, 0, currentFrame)
+                    cv2.putText(currentFrame, "OUT!", (currentFrame.shape[1]//2 - 100, currentFrame.shape[0]//2), 
+                                cv2.FONT_HERSHEY_DUPLEX, 4.0, (255, 255, 255), 3)
 
         success, encodedFrame = cv2.imencode(".jpg", currentFrame)
         if success: yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + encodedFrame.tobytes() + b'\r\n')
@@ -137,5 +131,18 @@ def index(): return render_template('index.html')
 
 @app.route('/video_feed')
 def videoFeed(): return Response(generateFrames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/set_points', methods=['POST'])
+def set_points():
+    global table_points
+    data = request.get_json()
+    if 'points' in data:
+        table_points = data['points']
+        return jsonify({"status": "success", "points": table_points})
+    return jsonify({"status": "error", "message": "No points provided"}), 400
+
+@app.route('/get_points')
+def get_points():
+    return jsonify({"points": table_points})
 
 if __name__ == "__main__": app.run(host='0.0.0.0', port=5001)
