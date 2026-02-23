@@ -1,10 +1,172 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
+
 <head>
-    <title>AutoRef Face Tracker</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoRef - Table Boundary Setup</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --primary: #38bdf8;
+            --accent: #f43f5e;
+            --text: #f8fafc;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, blinkmacsystemfont, 'Segoe UI', roboto, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+
+        .container {
+            background-color: var(--card);
+            padding: 2rem;
+            border-radius: 1rem;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+            max-width: fit-content;
+            text-align: center;
+        }
+
+        h1 {
+            margin-top: 0;
+            color: var(--primary);
+            font-weight: 800;
+            letter-spacing: -0.025em;
+        }
+
+        .video-wrapper {
+            position: relative;
+            border: 4px solid var(--primary);
+            border-radius: 0.5rem;
+            overflow: hidden;
+            margin: 1.5rem 0;
+            cursor: crosshair;
+            line-height: 0;
+        }
+
+        img {
+            max-width: 100%;
+            height: auto;
+        }
+
+        .controls {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            margin-bottom: 1rem;
+        }
+
+        .info {
+            background: rgba(56, 189, 248, 0.1);
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            border: 1px solid var(--primary);
+            font-size: 0.9rem;
+            margin-bottom: 1rem;
+        }
+
+        button {
+            background-color: var(--primary);
+            color: var(--bg);
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 0.25rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        #status {
+            font-weight: bold;
+            color: var(--primary);
+        }
+    </style>
 </head>
+
 <body>
-    <h1>Live Face Tracker</h1>
-    <img src="{{ url_for('videoFeed') }}" alt="Live Feed">
+    <div class="container">
+        <h1>AutoRef System</h1>
+        <div class="info">
+            Click 4 points on the table (top-left, top-right, bottom-right, bottom-left) to define the boundary.
+        </div>
+        <div class="controls">
+            <div>Points selected: <span id="point-count">0</span> / 4</div>
+            <button onclick="resetPoints()">Reset Points</button>
+        </div>
+        <div class="video-wrapper">
+            <img id="live-feed" src="{{ url_for('videoFeed') }}" alt="Live Feed" onclick="handleImgClick(event)">
+        </div>
+        <div id="status">Ready</div>
+    </div>
+
+    <script>
+        let selectedPoints = [];
+        const pointCountEl = document.getElementById('point-count');
+        const statusEl = document.getElementById('status');
+        const imgEl = document.getElementById('live-feed');
+
+        function handleImgClick(event) {
+            if (selectedPoints.length >= 4) return;
+
+            const rect = imgEl.getBoundingClientRect();
+            const scaleX = imgEl.naturalWidth / rect.width;
+            const scaleY = imgEl.naturalHeight / rect.height;
+
+            const x = Math.round((event.clientX - rect.left) * scaleX);
+            const y = Math.round((event.clientY - rect.top) * scaleY);
+
+            selectedPoints.push([x, y]);
+            pointCountEl.textContent = selectedPoints.length;
+
+            if (selectedPoints.length === 4) {
+                sendPoints();
+            } else {
+                statusEl.textContent = `Point ${selectedPoints.length} set. ${4 - selectedPoints.length} more needed.`;
+            }
+        }
+
+        async function sendPoints() {
+            statusEl.textContent = 'Sending points...';
+            try {
+                const response = await fetch('/set_points', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ points: selectedPoints })
+                });
+                const data = await response.json();
+                if (data.status === 'success') {
+                    statusEl.textContent = 'Table boundary set successfully!';
+                } else {
+                    statusEl.textContent = 'Error: ' + data.message;
+                }
+            } catch (err) {
+                statusEl.textContent = 'Error sending points: ' + err.message;
+            }
+        }
+
+        function resetPoints() {
+            selectedPoints = [];
+            pointCountEl.textContent = '0';
+            statusEl.textContent = 'Points cleared. Click 4 points again.';
+            fetch('/set_points', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ points: [] })
+            });
+        }
+    </script>
 </body>
+
 </html>
